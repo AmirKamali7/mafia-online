@@ -1,8 +1,5 @@
-
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn...');
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
 
 * {
   box-sizing: border-box;
@@ -35,19 +32,19 @@ body {
   background: #dc2626;
 }
 
-/* ─── فیچر ۱: تم شب (گرادینت تیره navy/dark blue) ──────────────────────── */
+/* ─── تم شب ──────────────────────────────────────────────────── */
 .night-theme {
   background: linear-gradient(135deg, #0a0a1a 0%, #0f1629 30%, #1a1a3e 60%, #0d1117 100%);
   color: #ffffff;
 }
 
-/* ─── فیچر ۱: تم روز (گرادینت آبی کمرنگ sky blue) ──────────────────────── */
+/* ─── تم روز ──────────────────────────────────────────────────── */
 .day-theme {
   background: linear-gradient(135deg, #87CEEB 0%, #B0E0E6 30%, #ADD8E6 60%, #87CEEB 100%);
   color: #ffffff;
 }
 
-/* ─── فیچر ۱: کادرها در هر دو حالت: بک‌گراند سورمه‌ای ──────────────────── */
+/* ─── Glass ──────────────────────────────────────────────────── */
 .glass-dark {
   background: rgba(15, 23, 42, 0.85);
   backdrop-filter: blur(12px);
@@ -55,29 +52,71 @@ body {
   color: #ffffff;
 }
 
-/* ─── گلس روز (بدون override تم) ─────────────────────────────────────── */
 .glass {
   background: rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* ─── فیچر ۱: تمام تکست‌ها در هر دو حالت سفید ──────────────────────────── */
-/* حذف override های قبلی day-theme .text-white */
-
+/* ─── Buttons (بدون @apply) ──────────────────────────────────── */
 .btn-primary {
-  @apply bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+  background-color: #dc2626;
+  color: #ffffff;
+  font-weight: 700;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: none;
+}
+.btn-primary:hover {
+  background-color: #b91c1c;
+}
+.btn-primary:active {
+  transform: scale(0.95);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-secondary {
-  @apply bg-white/10 hover:bg-white/20 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 active:scale-95 border border-white/20;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  font-weight: 700;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  transition: all 0.2s;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.btn-secondary:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+.btn-secondary:active {
+  transform: scale(0.95);
 }
 
+/* ─── Input ──────────────────────────────────────────────────── */
 .input-field {
-  @apply bg-white/10 border border-white/20 text-white placeholder-white/40 rounded-xl px-4 py-3 w-full focus:outline-none focus:border-red-500 transition-all duration-200 text-right;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  width: 100%;
+  transition: all 0.2s;
+  text-align: right;
+  outline: none;
+}
+.input-field::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+.input-field:focus {
+  border-color: #ef4444;
 }
 
-/* ─── Glow Animations ────────────────────────────────────────────────── */
+/* ─── Glow ──────────────────────────────────────────────────── */
 @keyframes glow {
   0%, 100% {
     box-shadow: 0 0 5px #ef4444, 0 0 10px #ef4444;
@@ -91,7 +130,7 @@ body {
   animation: glow 2s ease-in-out infinite;
 }
 
-/* ─── فیچر ۶: نشانگر صحبت کردن (Speaking indicator) ────────────────── */
+/* ─── Speaking indicator ────────────────────────────────────── */
 @keyframes speaking-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
@@ -109,7 +148,7 @@ body {
   border-color: #22c55e !important;
 }
 
-/* ─── Slide/Fade Animations ──────────────────────────────────────────── */
+/* ─── Animations ────────────────────────────────────────────── */
 @keyframes slide-up {
   from {
     opacity: 0;
@@ -134,17 +173,28 @@ body {
   animation: fade-in 0.3s ease-out;
 }
 
-/* ─── Phase transition ───────────────────────────────────────────────── */
+/* ─── Phase transition ──────────────────────────────────────── */
 .phase-transition {
   transition: background 1.5s ease-in-out, color 0.5s ease;
 }
 
-/* ─── God Panel Styles ───────────────────────────────────────────────── */
+/* ─── God Panel ─────────────────────────────────────────────── */
 .god-panel-section {
-  @apply rounded-xl p-3 bg-white/5 border border-white/10;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* ─── Sound button styles ────────────────────────────────────────────── */
+/* ─── Sound button ──────────────────────────────────────────── */
 .sound-btn {
-  @apply p-2 rounded-lg transition-all duration-200 active:scale-90 hover:scale-105;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  transition: all 0.2s;
+}
+.sound-btn:active {
+  transform: scale(0.9);
+}
+.sound-btn:hover {
+  transform: scale(1.05);
 }
