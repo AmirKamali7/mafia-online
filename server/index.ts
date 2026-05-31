@@ -81,12 +81,65 @@ interface RoleConfig {
 const lobbies = new Map<string, Lobby>();
 const disconnectTimers = new Map<string, NodeJS.Timeout>();
 
+// ─── Anti-Spam: Rate Limiter ──────────────────────────────────────────────────
+
+const chatRateLimit = new Map<string, number[]>();
+const CHAT_LIMIT = 5;
+const CHAT_WINDOW = 5000;
+
+function isRateLimited(socketId: string): boolean {
+  const now = Date.now();
+  const timestamps = chatRateLimit.get(socketId) || [];
+  const recent = timestamps.filter((t) => now - t < CHAT_WINDOW);
+  if (recent.length >= CHAT_LIMIT) return true;
+  recent.push(now);
+  chatRateLimit.set(socketId, recent);
+  return false;
+}
+
+// ─── Memory Leak Fix: Lobby Cleanup ──────────────────────────────────────────
+
+setInterval(() => {
+  const now = Date.now();
+  const TWO_HOURS = 2 * 60 * 60 * 1000;
+
+  lobbies.forEach((lobby, code) => {
+    if (now - lobby.phaseStartTime > TWO_HOURS) {
+      // تایمر vote رو هم پاک کن
+      if (lobby.voteSession.timer) clearTimeout(lobby.voteSession.timer);
+      lobbies.delete(code);
+      console.log(`[CLEANUP] deleted stale lobby: ${code}`);
+    }
+  });
+
+  // پاکسازی rate limit قدیمی
+  chatRateLimit.forEach((timestamps, socketId) => {
+    const recent = timestamps.filter((t) => now - t < CHAT_WINDOW);
+    if (recent.length === 0) chatRateLimit.delete(socketId);
+    else chatRateLimit.set(socketId, recent);
+  });
+
+  // پاکسازی disconnect timers قدیمی
+  disconnectTimers.forEach((timer, playerId) => {
+    // اگر بازیکن در هیچ لابی نیست، تایمرش رو پاک کن
+    let found = false;
+    lobbies.forEach((lobby) => {
+      if (lobby.players.some((p) => p.id === playerId)) found = true;
+    });
+    if (!found) {
+      clearTimeout(timer);
+      disconnectTimers.delete(playerId);
+    }
+  });
+}, 60000);
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function generateLobbyCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < 6; i++)
+    code += chars[Math.floor(Math.random() * chars.length)];
   if (lobbies.has(code)) return generateLobbyCode();
   return code;
 }
@@ -94,9 +147,11 @@ function generateLobbyCode(): string {
 function assignRoles(players: Player[], roles: RoleConfig[]): Player[] {
   const roleList: { name: string; team: string }[] = [];
   roles.forEach((r) => {
-    for (let i = 0; i < r.count; i++) roleList.push({ name: r.name, team: r.team });
+    for (let i = 0; i < r.count; i++)
+      roleList.push({ name: r.name, team: r.team });
   });
-  while (roleList.length < players.length) roleList.push({ name: "شهروند ساده", team: "citizen" });
+  while (roleList.length < players.length)
+    roleList.push({ name: "شهروند ساده", team: "citizen" });
   for (let i = roleList.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [roleList[i], roleList[j]] = [roleList[j], roleList[i]];
@@ -104,7 +159,7 @@ function assignRoles(players: Player[], roles: RoleConfig[]): Player[] {
   return players.map((p, idx) => ({
     ...p,
     role: roleList[idx]?.name ?? "شهروند ساده",
-    team: roleList[idx]?.team ?? "citizen",
+    team: roleList[idx]?.team ?? "citizen"
   }));
 }
 
@@ -134,8 +189,8 @@ function getLobbyPublicData(lobby: Lobby) {
       isMuted: p.isGodMuted || p.isSelfMuted,
       isReady: p.isReady,
       isGod: p.id === lobby.godId,
-      canVote: p.canVote,
-    })),
+      canVote: p.canVote
+    }))
   };
 }
 
@@ -161,32 +216,58 @@ function savePhaseLog(lobby: Lobby) {
     endTime: Date.now(),
     events: [...lobby.currentLogEvents],
     eliminated: [...lobby.currentEliminated],
-    saved: [...lobby.currentSaved],
+    saved: [...lobby.currentSaved]
   });
   lobby.currentLogEvents = [];
   lobby.currentEliminated = [];
   lobby.currentSaved = [];
 }
 
-function createPlayer(id: string, name: string, socketId: string, isGod: boolean): Player {
+function createPlayer(
+  id: string,
+  name: string,
+  socketId: string,
+  isGod: boolean
+): Player {
   return {
-    id, name, socketId, role: null, team: null,
-    isAlive: true, isSelfMuted: false, isGodMuted: false,
-    isReady: isGod, isGod, canVote: true, testament: "",
+    id,
+    name,
+    socketId,
+    role: null,
+    team: null,
+    isAlive: true,
+    isSelfMuted: false,
+    isGodMuted: false,
+    isReady: isGod,
+    isGod,
+    canVote: true,
+    testament: ""
   };
 }
 
 function createDefaultVoteSession(): VoteSession {
-  return { active: false, endTime: 0, duration: 0, votes: {}, timer: null, type: "eliminate" };
+  return {
+    active: false,
+    endTime: 0,
+    duration: 0,
+    votes: {},
+    timer: null,
+    type: "eliminate"
+  };
 }
 
-// ★ منطق شب: پردازش اکشن‌ها وقتی فاز به روز عوض میشه
+// ─── Night Actions Logic ──────────────────────────────────────────────────────
+
 function resolveNightActions(lobby: Lobby, ioServer: Server, code: string) {
   const actions = lobby.nightActions;
   if (actions.length === 0) return;
 
-  const shootActions = actions.filter((a) =>
-    a.action === "shoot" || a.action === "snipe" || a.action === "kill" || a.action === "execute"
+  const shootActions = actions.filter(
+    (a) =>
+      a.action === "shoot" ||
+      a.action === "snipe" ||
+      a.action === "kill" ||
+      a.action === "execute"
   );
   const healAction = actions.find((a) => a.action === "heal");
   const investigateAction = actions.find((a) => a.action === "investigate");
@@ -195,63 +276,71 @@ function resolveNightActions(lobby: Lobby, ioServer: Server, code: string) {
   const poisonAction = actions.find((a) => a.action === "poison");
   const trackAction = actions.find((a) => a.action === "track");
 
-  // چشم‌بند: اکشن بازیکن blocked رو لغو کن (تیر مافیا لغو نمیشه)
+  const god = lobby.players.find((p) => p.id === lobby.godId);
+  const notifyGod = (
+    text: string,
+    action: string,
+    playerName: string,
+    role: string,
+    targetName: string
+  ) => {
+    if (god) {
+      const gs = ioServer.sockets.sockets.get(god.socketId);
+      if (gs)
+        gs.emit("god_notification", {
+          text,
+          type: "action",
+          action,
+          playerName,
+          role,
+          targetName
+        });
+    }
+  };
+
+  // چشم‌بند
   if (blockAction) {
     const blockedId = blockAction.targetId;
     lobby.nightActions = actions.filter(
       (a) => a.playerId !== blockedId || a.action === "shoot"
     );
-    const blockedName = lobby.players.find((p) => p.id === blockedId)?.name || "";
-    addLogEvent(lobby, `${blockAction.playerName} اکشن ${blockedName} رو خنثی کرد`);
-
-    const god = lobby.players.find((p) => p.id === lobby.godId);
-    if (god) {
-      const gs = ioServer.sockets.sockets.get(god.socketId);
-      if (gs) {
-        gs.emit("god_notification", {
-          text: `🙈 ${blockAction.playerName} اکشن ${blockedName} رو خنثی کرد`,
-          type: "action", action: "block",
-          playerName: blockAction.playerName,
-          role: blockAction.role,
-          targetName: blockedName,
-        });
-      }
-    }
+    const blockedName =
+      lobby.players.find((p) => p.id === blockedId)?.name || "";
+    addLogEvent(
+      lobby,
+      `${blockAction.playerName} اکشن ${blockedName} رو خنثی کرد`
+    );
+    notifyGod(
+      `🙈 ${blockAction.playerName} اکشن ${blockedName} رو خنثی کرد`,
+      "block",
+      blockAction.playerName,
+      blockAction.role,
+      blockedName
+    );
   }
 
-  // هدف‌های تیر
   const killTargets = new Set<string>();
   shootActions.forEach((a) => killTargets.add(a.targetId));
-
   const healedId = healAction?.targetId;
   const guardedId = guardAction?.targetId;
 
-  // پردازش کشتن
   killTargets.forEach((targetId) => {
     const target = lobby.players.find((p) => p.id === targetId);
     if (!target || !target.isAlive) return;
 
-    const god = lobby.players.find((p) => p.id === lobby.godId);
-
-    // نجات توسط دکتر
     if (targetId === healedId) {
       addLogEvent(lobby, `${target.name} توسط دکتر نجات یافت`);
       lobby.currentSaved.push(target.name);
-      if (god) {
-        const gs = ioServer.sockets.sockets.get(god.socketId);
-        if (gs) {
-          gs.emit("god_notification", {
-            text: `💊 ${target.name} توسط دکتر نجات یافت`,
-            type: "action", action: "heal_save",
-            playerName: "دکتر", role: "دکتر",
-            targetName: target.name,
-          });
-        }
-      }
+      notifyGod(
+        `💊 ${target.name} توسط دکتر نجات یافت`,
+        "heal_save",
+        "دکتر",
+        "دکتر",
+        target.name
+      );
       return;
     }
 
-    // محافظت نگهبان: نگهبان جای هدف میمیره
     if (targetId === guardedId && guardAction) {
       const guard = lobby.players.find((p) => p.id === guardAction.playerId);
       if (guard && guard.isAlive) {
@@ -259,67 +348,65 @@ function resolveNightActions(lobby: Lobby, ioServer: Server, code: string) {
         guard.isGodMuted = true;
         addLogEvent(lobby, `${guard.name} (نگهبان) جای ${target.name} کشته شد`);
         lobby.currentEliminated.push(guard.name);
-        if (god) {
-          const gs = ioServer.sockets.sockets.get(god.socketId);
-          if (gs) {
-            gs.emit("god_notification", {
-              text: `💂 ${guard.name} جای ${target.name} کشته شد`,
-              type: "action", action: "guard_die",
-              playerName: guard.name, role: "نگهبان",
-              targetName: target.name,
-            });
-          }
-        }
+        notifyGod(
+          `💂 ${guard.name} جای ${target.name} کشته شد`,
+          "guard_die",
+          guard.name,
+          "نگهبان",
+          target.name
+        );
         return;
       }
     }
 
-    // کشته شد
     target.isAlive = false;
     target.isGodMuted = true;
     addLogEvent(lobby, `${target.name} در شب کشته شد`);
     lobby.currentEliminated.push(target.name);
   });
 
-  // ساقی
   if (poisonAction) {
-    const poisonedName = lobby.players.find((p) => p.id === poisonAction.targetId)?.name || "";
-    addLogEvent(lobby, `${poisonAction.playerName} ${poisonedName} را مسموم کرد`);
+    const poisonedName =
+      lobby.players.find((p) => p.id === poisonAction.targetId)?.name || "";
+    addLogEvent(
+      lobby,
+      `${poisonAction.playerName} ${poisonedName} را مسموم کرد`
+    );
   }
 
-  // کارآگاه: نتیجه استعلام فقط به خودش
   if (investigateAction) {
-    const target = lobby.players.find((p) => p.id === investigateAction.targetId);
-    const investigator = lobby.players.find((p) => p.id === investigateAction.playerId);
+    const target = lobby.players.find(
+      (p) => p.id === investigateAction.targetId
+    );
+    const investigator = lobby.players.find(
+      (p) => p.id === investigateAction.playerId
+    );
     if (target && investigator) {
       let result = target.team === "mafia" ? "مافیا" : "شهروند";
-      // پدرخوانده و جاسوس استعلام شهروند میخورن
-      if (target.role === "پدرخوانده" || target.role === "جاسوس") result = "شهروند";
-      // مأمور مخفی استعلام مافیا میخوره
+      if (target.role === "پدرخوانده" || target.role === "جاسوس")
+        result = "شهروند";
       if (target.role === "مأمور مخفی") result = "مافیا";
 
       const invSocket = ioServer.sockets.sockets.get(investigator.socketId);
-      if (invSocket) {
-        invSocket.emit("investigate_result", { targetName: target.name, result });
-      }
-      addLogEvent(lobby, `${investigator.name} از ${target.name} استعلام گرفت → ${result}`);
-
-      const god = lobby.players.find((p) => p.id === lobby.godId);
-      if (god) {
-        const gs = ioServer.sockets.sockets.get(god.socketId);
-        if (gs) {
-          gs.emit("god_notification", {
-            text: `🔍 ${investigator.name} استعلام ${target.name} → ${result}`,
-            type: "action", action: "investigate_result",
-            playerName: investigator.name, role: "کارآگاه",
-            targetName: target.name,
-          });
-        }
-      }
+      if (invSocket)
+        invSocket.emit("investigate_result", {
+          targetName: target.name,
+          result
+        });
+      addLogEvent(
+        lobby,
+        `${investigator.name} از ${target.name} استعلام گرفت → ${result}`
+      );
+      notifyGod(
+        `🔍 ${investigator.name} استعلام ${target.name} → ${result}`,
+        "investigate_result",
+        investigator.name,
+        "کارآگاه",
+        target.name
+      );
     }
   }
 
-  // ردیاب: نتیجه فقط به خودش
   if (trackAction) {
     const tracker = lobby.players.find((p) => p.id === trackAction.playerId);
     const tracked = lobby.players.find((p) => p.id === trackAction.targetId);
@@ -328,72 +415,77 @@ function resolveNightActions(lobby: Lobby, ioServer: Server, code: string) {
         (a) => a.playerId === tracked.id && a.action !== "track"
       );
       const visitedName = trackedAction
-        ? lobby.players.find((p) => p.id === trackedAction.targetId)?.name || "نامشخص"
+        ? lobby.players.find((p) => p.id === trackedAction.targetId)?.name ||
+          "نامشخص"
         : "هیچ‌کس";
       const tSocket = ioServer.sockets.sockets.get(tracker.socketId);
-      if (tSocket) {
+      if (tSocket)
         tSocket.emit("track_result", { targetName: tracked.name, visitedName });
-      }
-      addLogEvent(lobby, `${tracker.name} ردیابی کرد: ${tracked.name} → ${visitedName}`);
+      addLogEvent(
+        lobby,
+        `${tracker.name} ردیابی کرد: ${tracked.name} → ${visitedName}`
+      );
     }
   }
 }
 
-// ★ پایان رأی‌گیری
+// ─── Vote Logic ───────────────────────────────────────────────────────────────
+
 function finishVote(lobby: Lobby, code: string, ioServer: Server) {
   lobby.voteSession.active = false;
-
   const counts: Record<string, number> = {};
   Object.values(lobby.voteSession.votes).forEach((t) => {
     counts[t] = (counts[t] || 0) + 1;
   });
-
   const alive = lobby.players.filter((p) => p.isAlive && !p.isGod).length;
   const threshold = getVoteThreshold(alive);
 
   if (lobby.voteSession.type === "inquiry") {
-    // ★ استعلام: بله/خیر
     const yesCount = counts["yes"] || 0;
     const noCount = counts["no"] || 0;
     const passed = yesCount >= threshold;
     let roleList = "";
 
     if (passed) {
-      // نمایش نقش‌های باقیمانده (بدون اسم بازیکن)
       const remainingRoles: Record<string, number> = {};
-      lobby.players.filter((p) => p.isAlive && !p.isGod).forEach((p) => {
-        if (p.role) remainingRoles[p.role] = (remainingRoles[p.role] || 0) + 1;
-      });
+      lobby.players
+        .filter((p) => p.isAlive && !p.isGod)
+        .forEach((p) => {
+          if (p.role)
+            remainingRoles[p.role] = (remainingRoles[p.role] || 0) + 1;
+        });
       roleList = Object.entries(remainingRoles)
         .map(([role, count]) => `${role}: ${count}`)
         .join(" | ");
-
-      ioServer.to(code).emit("system_message", {
-        text: `🔍 نقش‌های باقی‌مانده: ${roleList}`,
-        type: "reveal",
-      });
+      ioServer
+        .to(code)
+        .emit("system_message", {
+          text: `🔍 نقش‌های باقی‌مانده: ${roleList}`,
+          type: "reveal"
+        });
       addLogEvent(lobby, `نظرسنجی استعلام تصویب شد: ${roleList}`);
     } else {
-      ioServer.to(code).emit("system_message", {
-        text: `🔍 نظرسنجی استعلام رد شد (بله: ${yesCount} / خیر: ${noCount})`,
-        type: "vote",
-      });
-      addLogEvent(lobby, `نظرسنجی استعلام رد شد (بله: ${yesCount} / خیر: ${noCount})`);
+      ioServer
+        .to(code)
+        .emit("system_message", {
+          text: `🔍 نظرسنجی رد شد (بله: ${yesCount} / خیر: ${noCount})`,
+          type: "vote"
+        });
+      addLogEvent(lobby, `نظرسنجی رد شد (بله: ${yesCount} / خیر: ${noCount})`);
     }
-
-    ioServer.to(code).emit("vote_result", {
-      eliminated: null,
-      votes: counts,
-      threshold,
-      passed,
-      type: "inquiry",
-      roleList,
-    });
+    ioServer
+      .to(code)
+      .emit("vote_result", {
+        eliminated: null,
+        votes: counts,
+        threshold,
+        passed,
+        type: "inquiry",
+        roleList
+      });
   } else {
-    // ★ اخراج: بازیکن با بیشترین رأی
     let eliminatedId: string | null = null;
     let maxVotes = 0;
-
     for (const [tid, count] of Object.entries(counts)) {
       if (count > maxVotes) {
         maxVotes = count;
@@ -407,46 +499,55 @@ function finishVote(lobby: Lobby, code: string, ioServer: Server) {
         target.isAlive = false;
         target.isGodMuted = true;
         lobby.currentEliminated.push(target.name);
-
-        ioServer.to(code).emit("vote_result", {
-          eliminated: target.id,
-          eliminatedName: target.name,
-          votes: counts,
-          threshold,
-          passed: true,
-          type: "eliminate",
-        });
-        ioServer.to(code).emit("player_eliminated", {
-          playerId: target.id,
-          playerName: target.name,
-          lobby: getLobbyPublicData(lobby),
-        });
-        ioServer.to(code).emit("system_message", {
-          text: `🗳️ ${target.name} با ${maxVotes} رأی از بازی حذف شد`,
-          type: "eliminate",
-        });
-
-        // وصیت‌نامه
-        if (target.testament) {
-          ioServer.to(code).emit("system_message", {
-            text: `📜 وصیت ${target.name}: ${target.testament}`,
-            type: "reveal",
+        ioServer
+          .to(code)
+          .emit("vote_result", {
+            eliminated: target.id,
+            eliminatedName: target.name,
+            votes: counts,
+            threshold,
+            passed: true,
+            type: "eliminate"
           });
+        ioServer
+          .to(code)
+          .emit("player_eliminated", {
+            playerId: target.id,
+            playerName: target.name,
+            lobby: getLobbyPublicData(lobby)
+          });
+        ioServer
+          .to(code)
+          .emit("system_message", {
+            text: `🗳️ ${target.name} با ${maxVotes} رأی حذف شد`,
+            type: "eliminate"
+          });
+        if (target.testament) {
+          ioServer
+            .to(code)
+            .emit("system_message", {
+              text: `📜 وصیت ${target.name}: ${target.testament}`,
+              type: "reveal"
+            });
         }
         addLogEvent(lobby, `${target.name} با ${maxVotes} رأی حذف شد`);
       }
     } else {
-      ioServer.to(code).emit("vote_result", {
-        eliminated: null,
-        votes: counts,
-        threshold,
-        passed: false,
-        type: "eliminate",
-      });
-      ioServer.to(code).emit("system_message", {
-        text: "🗳️ رأی‌گیری به نتیجه نرسید",
-        type: "vote",
-      });
+      ioServer
+        .to(code)
+        .emit("vote_result", {
+          eliminated: null,
+          votes: counts,
+          threshold,
+          passed: false,
+          type: "eliminate"
+        });
+      ioServer
+        .to(code)
+        .emit("system_message", {
+          text: "🗳️ رأی‌گیری به نتیجه نرسید",
+          type: "vote"
+        });
       addLogEvent(lobby, "رأی‌گیری به نتیجه نرسید");
     }
   }
@@ -459,25 +560,28 @@ function finishVote(lobby: Lobby, code: string, ioServer: Server) {
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: {
+    origin: process.env.CORS_ORIGIN || "*",
+    methods: ["GET", "POST"],
+    credentials: true
+  }
 });
 
 io.on("connection", (socket) => {
   console.log(`[+] connected: ${socket.id}`);
 
-  // ── CREATE LOBBY ──────────────────────────────────────────────────────────
+  // ── CREATE LOBBY ──
   socket.on("create_lobby", ({ playerName }: { playerName: string }) => {
     const code = generateLobbyCode();
     const playerId = uuidv4();
     const god = createPlayer(playerId, playerName, socket.id, true);
-
     const lobby: Lobby = {
       code,
       godId: playerId,
       players: [god],
       roles: [
         { name: "مافیا ساده", team: "mafia", count: 1 },
-        { name: "شهروند ساده", team: "citizen", count: 2 },
+        { name: "شهروند ساده", team: "citizen", count: 2 }
       ],
       maxPlayers: 8,
       status: "waiting",
@@ -491,54 +595,53 @@ io.on("connection", (socket) => {
       currentLogEvents: [],
       currentEliminated: [],
       currentSaved: [],
-      voteSession: createDefaultVoteSession(),
+      voteSession: createDefaultVoteSession()
     };
-
     lobbies.set(code, lobby);
     socket.join(code);
     socket.emit("lobby_created", {
       code,
       playerId,
-      lobby: getLobbyPublicData(lobby),
+      lobby: getLobbyPublicData(lobby)
     });
     console.log(`[LOBBY] created: ${code} by ${playerName}`);
   });
 
-  // ── JOIN LOBBY ────────────────────────────────────────────────────────────
-  socket.on("join_lobby", ({ code, playerName }: { code: string; playerName: string }) => {
-    const lobby = lobbies.get(code.toUpperCase());
-    if (!lobby) {
-      socket.emit("error", { message: "لابی پیدا نشد!" });
-      return;
+  // ── JOIN LOBBY ──
+  socket.on(
+    "join_lobby",
+    ({ code, playerName }: { code: string; playerName: string }) => {
+      const lobby = lobbies.get(code.toUpperCase());
+      if (!lobby) {
+        socket.emit("error", { message: "لابی پیدا نشد!" });
+        return;
+      }
+      if (lobby.status !== "waiting") {
+        socket.emit("error", { message: "بازی شروع شده!" });
+        return;
+      }
+      if (lobby.players.filter((p) => !p.isGod).length >= lobby.maxPlayers) {
+        socket.emit("error", { message: "لابی پر است!" });
+        return;
+      }
+      const playerId = uuidv4();
+      lobby.players.push(createPlayer(playerId, playerName, socket.id, false));
+      socket.join(code);
+      socket.emit("lobby_joined", {
+        code,
+        playerId,
+        lobby: getLobbyPublicData(lobby)
+      });
+      io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
+      io.to(code).emit("system_message", {
+        text: `${playerName} وارد لابی شد`,
+        type: "join"
+      });
+      console.log(`[LOBBY] ${playerName} joined: ${code}`);
     }
-    if (lobby.status !== "waiting") {
-      socket.emit("error", { message: "بازی شروع شده!" });
-      return;
-    }
-    // گاد حساب نمیشه در تعداد
-    if (lobby.players.filter((p) => !p.isGod).length >= lobby.maxPlayers) {
-      socket.emit("error", { message: "لابی پر است!" });
-      return;
-    }
+  );
 
-    const playerId = uuidv4();
-    lobby.players.push(createPlayer(playerId, playerName, socket.id, false));
-    socket.join(code);
-
-    socket.emit("lobby_joined", {
-      code,
-      playerId,
-      lobby: getLobbyPublicData(lobby),
-    });
-    io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
-    io.to(code).emit("system_message", {
-      text: `${playerName} وارد لابی شد`,
-      type: "join",
-    });
-    console.log(`[LOBBY] ${playerName} joined: ${code}`);
-  });
-
-  // ── UPDATE SETTINGS (GOD) ────────────────────────────────────────────────
+  // ── UPDATE SETTINGS (GOD) ──
   socket.on("update_settings", ({ code, playerId, roles, maxPlayers }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -547,7 +650,7 @@ io.on("connection", (socket) => {
     io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
   });
 
-  // ── PLAYER READY ──────────────────────────────────────────────────────────
+  // ── PLAYER READY ──
   socket.on("player_ready", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) return;
@@ -558,7 +661,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ── START GAME (GOD) ─────────────────────────────────────────────────────
+  // ── START GAME (GOD) ──
   socket.on("start_game", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -574,7 +677,6 @@ io.on("connection", (socket) => {
     lobby.status = "starting";
     lobby.phaseStartTime = Date.now();
 
-    // نقش هر بازیکن فقط به خودش
     lobby.players.forEach((p) => {
       if (!p.isGod && p.role) {
         const s = io.sockets.sockets.get(p.socketId);
@@ -582,21 +684,18 @@ io.on("connection", (socket) => {
       }
     });
 
-    // لیست کامل نقش‌ها فقط به گاد
     const gs = io.sockets.sockets.get(god.socketId);
-    if (gs) {
+    if (gs)
       gs.emit("all_roles", {
         players: lobby.players
           .filter((p) => !p.isGod)
-          .map((p) => ({ id: p.id, name: p.name, role: p.role, team: p.team })),
+          .map((p) => ({ id: p.id, name: p.name, role: p.role, team: p.team }))
       });
-    }
 
     io.to(code).emit("game_starting", {
       lobby: getLobbyPublicData(lobby),
-      countdown: 30,
+      countdown: 30
     });
-
     setTimeout(() => {
       lobby.status = "playing";
       lobby.phase = "day";
@@ -604,33 +703,29 @@ io.on("connection", (socket) => {
       lobby.phaseStartTime = Date.now();
       io.to(code).emit("game_started", getLobbyPublicData(lobby));
     }, 30000);
-
     addLogEvent(lobby, `بازی شروع شد با ${nonGod.length} بازیکن`);
     console.log(`[GAME] started: ${code}`);
   });
 
-  // ── TOGGLE PHASE (GOD) ────────────────────────────────────────────────────
+  // ── TOGGLE PHASE (GOD) ──
   socket.on("toggle_phase", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
 
-    // ★ شب → روز: پردازش اکشن‌های شبانه
     if (lobby.phase === "night") {
       resolveNightActions(lobby, io, code);
-
       const eliminated = lobby.currentEliminated;
       if (eliminated.length > 0) {
         io.to(code).emit("system_message", {
           text: `☀️ صبح شد. ${eliminated.join("، ")} دیشب از دنیا رفتند`,
-          type: "eliminate",
+          type: "eliminate"
         });
-        // وصیت‌نامه حذف‌شده‌ها
         eliminated.forEach((name) => {
           const player = lobby.players.find((p) => p.name === name);
           if (player && player.testament) {
             io.to(code).emit("system_message", {
               text: `📜 وصیت ${player.name}: ${player.testament}`,
-              type: "reveal",
+              type: "reveal"
             });
           }
         });
@@ -638,94 +733,83 @@ io.on("connection", (socket) => {
       } else {
         io.to(code).emit("system_message", {
           text: "☀️ صبح شد. دیشب کسی نمرد!",
-          type: "phase",
+          type: "phase"
         });
       }
     }
 
     savePhaseLog(lobby);
-
     lobby.phase = lobby.phase === "day" ? "night" : "day";
     if (lobby.phase === "day") lobby.round += 1;
     lobby.phaseStartTime = Date.now();
     lobby.awakeGroup = null;
     lobby.nightActions = [];
-
-    // ریست رأی‌گیری
     if (lobby.voteSession.timer) clearTimeout(lobby.voteSession.timer);
     lobby.voteSession = createDefaultVoteSession();
 
     io.to(code).emit("phase_changed", {
       phase: lobby.phase,
       round: lobby.round,
-      phaseStartTime: lobby.phaseStartTime,
+      phaseStartTime: lobby.phaseStartTime
     });
-
-    const phaseText = lobby.phase === "day"
-      ? `☀️ روز ${lobby.round} شروع شد`
-      : `🌙 شب ${lobby.round} شروع شد`;
+    const phaseText =
+      lobby.phase === "day"
+        ? `☀️ روز ${lobby.round} شروع شد`
+        : `🌙 شب ${lobby.round} شروع شد`;
     io.to(code).emit("system_message", { text: phaseText, type: "phase" });
 
-    // آپدیت دسترسی چت
     lobby.players.forEach((p) => {
       const s = io.sockets.sockets.get(p.socketId);
-      if (s) {
+      if (s)
         s.emit("chat_permission_changed", {
           phase: lobby.phase,
           awakeGroup: null,
-          canChat: canPlayerChat(lobby, p),
+          canChat: canPlayerChat(lobby, p)
         });
-      }
     });
-
     addLogEvent(lobby, phaseText);
   });
 
-  // ── SET AWAKE GROUP (GOD) ─────────────────────────────────────────────────
+  // ── SET AWAKE GROUP (GOD) ──
   socket.on("set_awake_group", ({ code, playerId, group }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
-
     lobby.awakeGroup = group;
     io.to(code).emit("awake_group_changed", { group });
-
-    // آپدیت دسترسی چت هر بازیکن
     lobby.players.forEach((p) => {
       const s = io.sockets.sockets.get(p.socketId);
-      if (s) {
+      if (s)
         s.emit("chat_permission_changed", {
           phase: lobby.phase,
           awakeGroup: group,
-          canChat: canPlayerChat(lobby, p),
+          canChat: canPlayerChat(lobby, p)
         });
-      }
     });
-
     if (group) {
       io.to(code).emit("system_message", {
         text: `${group} بیدار شد`,
-        type: "phase",
+        type: "phase"
       });
       addLogEvent(lobby, `${group} بیدار شد`);
     } else {
       io.to(code).emit("system_message", {
         text: "همه خوابیدند",
-        type: "phase",
+        type: "phase"
       });
     }
   });
 
-  // ── ROLE ACTION (PLAYER) ──────────────────────────────────────────────────
+  // ── ROLE ACTION (PLAYER) ──
   socket.on("role_action", ({ code, playerId, targetId, action }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.phase !== "night") return;
-
     const player = lobby.players.find((p) => p.id === playerId);
     const target = lobby.players.find((p) => p.id === targetId);
     if (!player || !target || !player.isAlive) return;
 
-    // جایگزین اکشن قبلی
-    lobby.nightActions = lobby.nightActions.filter((a) => a.playerId !== player.id);
+    lobby.nightActions = lobby.nightActions.filter(
+      (a) => a.playerId !== player.id
+    );
     lobby.nightActions.push({
       playerId: player.id,
       playerName: player.name,
@@ -733,9 +817,8 @@ io.on("connection", (socket) => {
       targetId: target.id,
       targetName: target.name,
       action,
-      timestamp: Date.now(),
+      timestamp: Date.now()
     });
-
     socket.emit("action_confirmed", { action, targetName: target.name });
 
     const actionLabels: Record<string, string> = {
@@ -761,76 +844,64 @@ io.on("connection", (socket) => {
       fortune: "🔮 پیشگویی کرد",
       hostage: "🪢 گروگان گرفت",
       deceive: "🃏 فریب داد",
-      compare: "📰 مقایسه کرد",
+      compare: "📰 مقایسه کرد"
     };
     const label = actionLabels[action] || action;
 
-    // فقط به گاد اطلاع بده
     const god = lobby.players.find((p) => p.id === lobby.godId);
     if (god) {
       const gs = io.sockets.sockets.get(god.socketId);
-      if (gs) {
+      if (gs)
         gs.emit("god_notification", {
           text: `${player.name} (${player.role}) ${label} ${target.name}`,
           type: "action",
           action,
           playerName: player.name,
           role: player.role,
-          targetName: target.name,
+          targetName: target.name
         });
-      }
     }
-
-    addLogEvent(lobby, `${player.name} (${player.role}) ${label} ${target.name}`);
+    addLogEvent(
+      lobby,
+      `${player.name} (${player.role}) ${label} ${target.name}`
+    );
   });
 
-  // ── START VOTE (GOD) ──────────────────────────────────────────────────────
-  socket.on("start_vote", ({ code, playerId, duration, type }: {
-    code: string;
-    playerId: string;
-    duration: number;
-    type?: string;
-  }) => {
+  // ── START VOTE (GOD) ──
+  socket.on("start_vote", ({ code, playerId, duration, type }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId || lobby.phase !== "day") return;
-
     const voteType = type === "inquiry" ? "inquiry" : "eliminate";
     const endTime = Date.now() + duration * 1000;
-
     lobby.voteSession = {
       active: true,
       endTime,
       duration,
       votes: {},
       timer: null,
-      type: voteType as "eliminate" | "inquiry",
+      type: voteType as "eliminate" | "inquiry"
     };
-
-    lobby.voteSession.timer = setTimeout(() => {
-      finishVote(lobby, code, io);
-    }, duration * 1000);
-
+    lobby.voteSession.timer = setTimeout(
+      () => finishVote(lobby, code, io),
+      duration * 1000
+    );
     io.to(code).emit("vote_started", { endTime, duration, type: voteType });
-
-    const voteText = voteType === "inquiry"
-      ? `🔍 نظرسنجی استعلام شروع شد (${duration} ثانیه)`
-      : `🗳️ رأی‌گیری شروع شد (${duration} ثانیه)`;
+    const voteText =
+      voteType === "inquiry"
+        ? `🔍 نظرسنجی استعلام شروع شد (${duration} ثانیه)`
+        : `🗳️ رأی‌گیری شروع شد (${duration} ثانیه)`;
     io.to(code).emit("system_message", { text: voteText, type: "vote" });
     addLogEvent(lobby, voteText);
   });
 
-  // ── CAST VOTE (PLAYER) ────────────────────────────────────────────────────
+  // ── CAST VOTE (PLAYER) ──
   socket.on("cast_vote", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || !lobby.voteSession.active) return;
-
     const player = lobby.players.find((p) => p.id === playerId);
     if (!player || !player.isAlive || !player.canVote || player.isGod) return;
-
     lobby.voteSession.votes[playerId] = targetId;
     io.to(code).emit("vote_updated", { votes: lobby.voteSession.votes });
-
-    // حد نصاب فوری فقط برای eliminate
     if (lobby.voteSession.type === "eliminate") {
       const alive = lobby.players.filter((p) => p.isAlive && !p.isGod).length;
       const threshold = getVoteThreshold(alive);
@@ -838,7 +909,6 @@ io.on("connection", (socket) => {
       Object.values(lobby.voteSession.votes).forEach((t) => {
         counts[t] = (counts[t] || 0) + 1;
       });
-
       for (const [, count] of Object.entries(counts)) {
         if (count >= threshold) {
           if (lobby.voteSession.timer) clearTimeout(lobby.voteSession.timer);
@@ -849,13 +919,8 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ── EMOJI ─────────────────────────────────────────────────────────────────
-  socket.on("send_emoji", ({ code, playerId, targetId, emoji }: {
-    code: string;
-    playerId: string;
-    targetId: string;
-    emoji: string;
-  }) => {
+  // ── EMOJI ──
+  socket.on("send_emoji", ({ code, playerId, targetId, emoji }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) return;
     const from = lobby.players.find((p) => p.id === playerId);
@@ -863,11 +928,11 @@ io.on("connection", (socket) => {
     io.to(code).emit("emoji_received", {
       fromName: from.name,
       targetId,
-      emoji,
+      emoji
     });
   });
 
-  // ── TESTAMENT ─────────────────────────────────────────────────────────────
+  // ── TESTAMENT ──
   socket.on("save_testament", ({ code, playerId, text }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) return;
@@ -878,17 +943,17 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ── GET GAME LOG (GOD) ────────────────────────────────────────────────────
+  // ── GET GAME LOG (GOD) ──
   socket.on("get_game_log", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
     socket.emit("game_log", {
       log: lobby.gameLog,
-      currentEvents: lobby.currentLogEvents,
+      currentEvents: lobby.currentLogEvents
     });
   });
 
-  // ── ELIMINATE PLAYER (GOD) ────────────────────────────────────────────────
+  // ── ELIMINATE (GOD) ──
   socket.on("eliminate_player", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -897,28 +962,25 @@ io.on("connection", (socket) => {
       target.isAlive = false;
       target.isGodMuted = true;
       lobby.currentEliminated.push(target.name);
-
       io.to(code).emit("player_eliminated", {
         playerId: targetId,
         playerName: target.name,
-        lobby: getLobbyPublicData(lobby),
+        lobby: getLobbyPublicData(lobby)
       });
       io.to(code).emit("system_message", {
         text: `${target.name} از بازی حذف شد`,
-        type: "eliminate",
+        type: "eliminate"
       });
-
-      if (target.testament) {
+      if (target.testament)
         io.to(code).emit("system_message", {
           text: `📜 وصیت ${target.name}: ${target.testament}`,
-          type: "reveal",
+          type: "reveal"
         });
-      }
       addLogEvent(lobby, `${target.name} حذف شد (توسط گاد)`);
     }
   });
 
-  // ── REVIVE PLAYER (GOD) ───────────────────────────────────────────────────
+  // ── REVIVE (GOD) ──
   socket.on("revive_player", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -930,13 +992,13 @@ io.on("connection", (socket) => {
       io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
       io.to(code).emit("system_message", {
         text: `${target.name} به بازی برگشت`,
-        type: "revive",
+        type: "revive"
       });
       addLogEvent(lobby, `${target.name} احیا شد`);
     }
   });
 
-  // ── TOGGLE MUTE (GOD) ────────────────────────────────────────────────────
+  // ── TOGGLE MUTE (GOD) ──
   socket.on("toggle_mute", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -944,18 +1006,17 @@ io.on("connection", (socket) => {
     if (target) {
       target.isGodMuted = !target.isGodMuted;
       const s = io.sockets.sockets.get(target.socketId);
-      if (s) {
+      if (s)
         s.emit("mute_changed", {
           isMuted: target.isGodMuted || target.isSelfMuted,
           isGodMuted: target.isGodMuted,
-          isSelfMuted: target.isSelfMuted,
+          isSelfMuted: target.isSelfMuted
         });
-      }
       io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
     }
   });
 
-  // ── MUTE ALL (GOD) ───────────────────────────────────────────────────────
+  // ── MUTE ALL (GOD) ──
   socket.on("mute_all", ({ code, playerId, mute }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -963,35 +1024,34 @@ io.on("connection", (socket) => {
       if (!p.isGod) {
         p.isGodMuted = mute;
         const s = io.sockets.sockets.get(p.socketId);
-        if (s) {
+        if (s)
           s.emit("mute_changed", {
             isMuted: p.isGodMuted || p.isSelfMuted,
             isGodMuted: p.isGodMuted,
-            isSelfMuted: p.isSelfMuted,
+            isSelfMuted: p.isSelfMuted
           });
-        }
       }
     });
     io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
   });
 
-  // ── SELF MUTE (PLAYER) ───────────────────────────────────────────────────
+  // ── SELF MUTE (همه شامل گاد) ──
   socket.on("self_mute", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) return;
     const p = lobby.players.find((x) => x.id === playerId);
-    if (p && !p.isGod) {
+    if (p) {
       p.isSelfMuted = !p.isSelfMuted;
       socket.emit("mute_changed", {
         isMuted: p.isGodMuted || p.isSelfMuted,
         isGodMuted: p.isGodMuted,
-        isSelfMuted: p.isSelfMuted,
+        isSelfMuted: p.isSelfMuted
       });
       io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
     }
   });
 
-  // ── SKIP VOTE (GOD) ──────────────────────────────────────────────────────
+  // ── SKIP VOTE (GOD) ──
   socket.on("skip_vote", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -1002,7 +1062,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ── REVEAL ROLE (GOD) ────────────────────────────────────────────────────
+  // ── REVEAL ROLE (GOD) ──
   socket.on("reveal_role", ({ code, playerId, targetId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -1011,19 +1071,19 @@ io.on("connection", (socket) => {
       io.to(code).emit("role_revealed", { playerName: t.name, role: t.role });
       io.to(code).emit("system_message", {
         text: `نقش ${t.name} فاش شد: ${t.role}`,
-        type: "reveal",
+        type: "reveal"
       });
     }
   });
 
-  // ── PLAY SOUND (GOD) ─────────────────────────────────────────────────────
+  // ── PLAY SOUND (GOD) ──
   socket.on("play_sound", ({ code, playerId, sound }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
     io.to(code).emit("play_sound", { sound });
   });
 
-  // ── END GAME (GOD) ───────────────────────────────────────────────────────
+  // ── END GAME (GOD) ──
   socket.on("end_game", ({ code, playerId, winner }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby || lobby.godId !== playerId) return;
@@ -1036,163 +1096,157 @@ io.on("connection", (socket) => {
         name: p.name,
         role: p.role,
         isAlive: p.isAlive,
-        isGod: p.isGod,
-      })),
+        isGod: p.isGod
+      }))
     });
   });
 
-  // ── CHAT MESSAGE ──────────────────────────────────────────────────────────
+  // ── CHAT MESSAGE (با anti-spam) ──
   socket.on("chat_message", ({ code, playerId, message }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) return;
     const player = lobby.players.find((p) => p.id === playerId);
     if (!player || !canPlayerChat(lobby, player)) return;
 
+    // ★ Anti-spam
+    if (isRateLimited(socket.id)) {
+      socket.emit("error", { message: "آرام‌تر! حداکثر ۵ پیام در ۵ ثانیه" });
+      return;
+    }
+
+    // محدودیت طول پیام
+    const safeMessage = String(message).slice(0, 500);
+
     if (lobby.phase === "night" && !player.isGod) {
-      // شب: فقط هم‌گروهی + گاد
       lobby.players.forEach((p) => {
         const shouldReceive =
           p.id === lobby.godId ||
           p.id === player.id ||
           (lobby.awakeGroup === "mafia" && p.team === "mafia") ||
           (lobby.awakeGroup !== "mafia" && p.role === lobby.awakeGroup);
-
         if (shouldReceive) {
           const s = io.sockets.sockets.get(p.socketId);
-          if (s) {
+          if (s)
             s.emit("chat_message", {
               playerName: player.name,
-              message,
+              message: safeMessage,
               isGod: false,
               isNightChat: true,
-              timestamp: Date.now(),
+              timestamp: Date.now()
             });
-          }
         }
       });
     } else {
-      // روز: همه
       io.to(code).emit("chat_message", {
         playerName: player.name,
-        message,
+        message: safeMessage,
         isGod: player.isGod,
         isNightChat: false,
-        timestamp: Date.now(),
+        timestamp: Date.now()
       });
     }
   });
 
-  // ── GET LOBBY ─────────────────────────────────────────────────────────────
+  // ── GET LOBBY ──
   socket.on("get_lobby", ({ code, playerId }: any) => {
     const lobby = lobbies.get(code);
     if (!lobby) {
       socket.emit("error", { message: "لابی پیدا نشد!" });
       return;
     }
-
-    // کنسل تایمر disconnect (reconnect)
     if (playerId && disconnectTimers.has(playerId)) {
       clearTimeout(disconnectTimers.get(playerId)!);
       disconnectTimers.delete(playerId);
-      console.log(`[RECONNECT] ${playerId}`);
     }
-
     socket.join(code);
-
     const p = lobby.players.find((x) => x.id === playerId);
     if (p) {
       p.socketId = socket.id;
       console.log(`[GET_LOBBY] ${p.name}, isGod: ${p.id === lobby.godId}`);
     }
-
     socket.emit("lobby_data", getLobbyPublicData(lobby));
-
-    // نقش فقط به خود بازیکن
-    if (p && !p.isGod && p.role) {
+    if (p && !p.isGod && p.role)
       socket.emit("your_role", { role: p.role, team: p.team });
-    }
-
-    // لیست نقش‌ها فقط به گاد
-    if (p && p.id === lobby.godId) {
+    if (p && p.id === lobby.godId)
       socket.emit("all_roles", {
         players: lobby.players
           .filter((x) => !x.isGod)
-          .map((x) => ({ id: x.id, name: x.name, role: x.role, team: x.team })),
+          .map((x) => ({ id: x.id, name: x.name, role: x.role, team: x.team }))
       });
-    }
-
-    // دسترسی چت
-    if (p) {
+    if (p)
       socket.emit("chat_permission_changed", {
         phase: lobby.phase,
         awakeGroup: lobby.awakeGroup,
-        canChat: canPlayerChat(lobby, p),
+        canChat: canPlayerChat(lobby, p)
       });
-    }
   });
 
-  // ── VOICE SIGNALING ───────────────────────────────────────────────────────
-  socket.on("voice_ready", ({ code }: any) => {
-    socket.to(code).emit("voice_user_joined", { userId: socket.id });
+  // ── WebRTC VOICE SIGNALING ──
+  // ★ سرور فقط signaling انجام میده — صدا P2P بین خود بازیکنان رد و بدل میشه
+  // هیچ دیتای صوتی از سرور رد نمیشه → فشار صفر روی سرور
+
+  socket.on("voice_ready", ({ code, playerId }: any) => {
+    // به همه بازیکنان دیگه اطلاع بده که یه نفر آماده voice هست
+    socket
+      .to(code)
+      .emit("voice_user_joined", { userId: playerId, socketId: socket.id });
   });
 
-  socket.on("voice_offer", ({ code, targetId, offer }: any) => {
-    const lobby = lobbies.get(code);
-    if (!lobby) return;
-    const t = lobby.players.find((p) => p.id === targetId);
-    if (t) {
-      const s = io.sockets.sockets.get(t.socketId);
-      if (s) s.emit("voice_offer", { fromId: socket.id, offer });
-    }
+  socket.on("voice_offer", ({ targetSocketId, offer }: any) => {
+    // offer رو مستقیم به target socket بفرست (P2P signaling)
+    io.to(targetSocketId).emit("voice_offer", {
+      fromSocketId: socket.id,
+      offer
+    });
   });
 
-  socket.on("voice_answer", ({ code, targetId, answer }: any) => {
-    const lobby = lobbies.get(code);
-    if (!lobby) return;
-    const t = lobby.players.find((p) => p.id === targetId);
-    if (t) {
-      const s = io.sockets.sockets.get(t.socketId);
-      if (s) s.emit("voice_answer", { fromId: socket.id, answer });
-    }
+  socket.on("voice_answer", ({ targetSocketId, answer }: any) => {
+    io.to(targetSocketId).emit("voice_answer", {
+      fromSocketId: socket.id,
+      answer
+    });
   });
 
-  socket.on("voice_ice", ({ code, targetId, candidate }: any) => {
-    const lobby = lobbies.get(code);
-    if (!lobby) return;
-    const t = lobby.players.find((p) => p.id === targetId);
-    if (t) {
-      const s = io.sockets.sockets.get(t.socketId);
-      if (s) s.emit("voice_ice", { fromId: socket.id, candidate });
-    }
+  socket.on("voice_ice", ({ targetSocketId, candidate }: any) => {
+    io.to(targetSocketId).emit("voice_ice", {
+      fromSocketId: socket.id,
+      candidate
+    });
   });
 
-  // ── DISCONNECT ────────────────────────────────────────────────────────────
+  // ── DISCONNECT ──
   socket.on("disconnect", () => {
     console.log(`[-] disconnected: ${socket.id}`);
+
+    // پاکسازی rate limit
+    chatRateLimit.delete(socket.id);
 
     lobbies.forEach((lobby, code) => {
       const p = lobby.players.find((x) => x.socketId === socket.id);
       if (!p) return;
 
+      // اطلاع به بقیه برای cleanup WebRTC connections
+      socket
+        .to(code)
+        .emit("voice_user_left", { userId: p.id, socketId: socket.id });
+
       if (lobby.status === "playing" || lobby.status === "starting") {
-        // بازی در جریان: ۱۵ ثانیه صبر برای reconnect
         const timer = setTimeout(() => {
           io.to(code).emit("system_message", {
             text: `${p.name} قطع شد`,
-            type: "leave",
+            type: "leave"
           });
           disconnectTimers.delete(p.id);
         }, 15000);
         disconnectTimers.set(p.id, timer);
       } else {
-        // لابی: حذف فوری
         const idx = lobby.players.findIndex((x) => x.id === p.id);
         if (idx !== -1) {
           lobby.players.splice(idx, 1);
           io.to(code).emit("lobby_updated", getLobbyPublicData(lobby));
           io.to(code).emit("system_message", {
             text: `${p.name} خارج شد`,
-            type: "leave",
+            type: "leave"
           });
           if (lobby.players.length === 0) {
             lobbies.delete(code);
@@ -1204,7 +1258,7 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = 3001;
+const PORT = parseInt(process.env.PORT || "3001");
 httpServer.listen(PORT, () => {
   console.log(`🚀 Socket.IO server running on port ${PORT}`);
 });

@@ -11,99 +11,115 @@ interface VoiceManagerProps {
   onSpeakingChange?: (speakingMap: Record<string, boolean>) => void;
 }
 
-interface PeerConnection {
-  peerId: string;
-  connection: RTCPeerConnection;
-  stream?: MediaStream;
-}
-
-const ICE_SERVERS = {
+const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-  ],
+    { urls: "stun:stun2.l.google.com:19302" }
+  ]
 };
+
+interface PeerData {
+  pc: RTCPeerConnection;
+  peerId: string;
+  stream?: MediaStream;
+}
 
 export default function VoiceManager({
   code,
   playerId,
   isMuted,
   isGod,
-  onSpeakingChange,
+  onSpeakingChange
 }: VoiceManagerProps) {
   const localStreamRef = useRef<MediaStream | null>(null);
-  const peersRef = useRef<Map<string, PeerConnection>>(new Map());
+  const peersRef = useRef<Map<string, PeerData>>(new Map()); // key = socketId
   const audioContainerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const speakingRef = useRef<Record<string, boolean>>({});
-  const analyserIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analysersRef = useRef<Map<string, AnalyserNode>>(new Map());
+  const analyserRef = useRef<{
+    ctx: AudioContext | null;
+    interval: NodeJS.Timeout | null;
+    analysers: Map<string, AnalyserNode>;
+  }>({ ctx: null, interval: null, analysers: new Map() });
 
-  // ── Remove peer ──────────────────────────────────────────────────────────
-  const removePeer = useCallback((targetId: string) => {
-    const peer = peersRef.current.get(targetId);
+  // ── Cleanup peer ──
+  const removePeer = useCallback((socketId: string) => {
+    const peer = peersRef.current.get(socketId);
     if (peer) {
-      peer.connection.close();
-      peersRef.current.delete(targetId);
+      peer.pc.close();
+      peersRef.current.delete(socketId);
     }
-    analysersRef.current.delete(targetId);
-    const audio = audioContainerRef.current?.querySelector(
-      `audio[data-peer-id="${targetId}"]`
+    // حذف audio element
+    const el = audioContainerRef.current?.querySelector(
+      `audio[data-sid="${socketId}"]`
     );
-    if (audio) audio.remove();
+    if (el) el.remove();
+    // حذف analyser
+    analyserRef.current.analysers.delete(socketId);
   }, []);
 
-  // ── Create peer connection ── ★ فیکس WebRTC error ────────────────────────
+  // ── Create peer connection ──
   const createPeer = useCallback(
-    (targetId: string, initiator: boolean): RTCPeerConnection | null => {
-      // ★ اگر قبلاً connection وجود داره، نساز
-      if (peersRef.current.has(targetId)) {
-        const existing = peersRef.current.get(targetId)!;
-        if (
-          existing.connection.connectionState !== "failed" &&
-          existing.connection.connectionState !== "closed"
-        ) {
-          return existing.connection;
-        }
-        removePeer(targetId);
+    (targetSocketId: string, targetPlayerId: string, initiator: boolean) => {
+      // اگر قبلاً وجود داره و سالمه، نساز
+      const existing = peersRef.current.get(targetSocketId);
+      if (
+        existing &&
+        existing.pc.connectionState !== "failed" &&
+        existing.pc.connectionState !== "closed"
+      ) {
+        return existing.pc;
       }
+      if (existing) removePeer(targetSocketId);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
 
+      // اضافه کردن track‌های لوکال
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current!);
         });
       }
 
+      // ICE candidate → به طرف مقابل بفرست
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           getSocket().emit("voice_ice", {
-            code,
-            playerId,
-            targetId,
-            candidate: event.candidate,
+            targetSocketId,
+            candidate: event.candidate
           });
         }
       };
 
+      // دریافت stream ریموت
       pc.ontrack = (event) => {
         // حذف audio قبلی
-        const oldAudio = audioContainerRef.current?.querySelector(
-          `audio[data-peer-id="${targetId}"]`
+        const oldEl = audioContainerRef.current?.querySelector(
+          `audio[data-sid="${targetSocketId}"]`
         );
-        if (oldAudio) oldAudio.remove();
+        if (oldEl) oldEl.remove();
 
         const audio = document.createElement("audio");
         audio.autoplay = true;
         audio.srcObject = event.streams[0];
-        audio.dataset.peerId = targetId;
+        audio.dataset.sid = targetSocketId;
         audioContainerRef.current?.appendChild(audio);
 
-        const peer = peersRef.current.get(targetId);
-        if (peer) {
-          peer.stream = event.streams[0];
+        const peer = peersRef.current.get(targetSocketId);
+        if (peer) peer.stream = event.streams[0];
+
+        // اضافه کردن analyser برای speaking detection
+        if (analyserRef.current.ctx && event.streams[0]) {
+          try {
+            const source = analyserRef.current.ctx.createMediaStreamSource(
+              event.streams[0]
+            );
+            const analyser = analyserRef.current.ctx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            analyserRef.current.analysers.set(targetSocketId, analyser);
+          } catch {}
         }
       };
 
@@ -112,21 +128,20 @@ export default function VoiceManager({
           pc.connectionState === "disconnected" ||
           pc.connectionState === "failed"
         ) {
-          removePeer(targetId);
+          removePeer(targetSocketId);
         }
       };
 
-      peersRef.current.set(targetId, { peerId: targetId, connection: pc });
+      peersRef.current.set(targetSocketId, { pc, peerId: targetPlayerId });
 
+      // initiator = offer بساز
       if (initiator) {
         pc.createOffer()
           .then((offer) => pc.setLocalDescription(offer))
           .then(() => {
             getSocket().emit("voice_offer", {
-              code,
-              playerId,
-              targetId,
-              offer: pc.localDescription,
+              targetSocketId,
+              offer: pc.localDescription
             });
           })
           .catch(console.error);
@@ -134,39 +149,41 @@ export default function VoiceManager({
 
       return pc;
     },
-    [code, playerId, removePeer]
+    [removePeer]
   );
 
-  // ── Speaking detection ───────────────────────────────────────────────────
+  // ── Speaking detection ──
   const startSpeakingDetection = useCallback(() => {
-    if (analyserIntervalRef.current) return;
-
+    if (analyserRef.current.interval) return;
     try {
-      const audioCtx = new AudioContext();
-      audioCtxRef.current = audioCtx;
+      const ctx = new AudioContext();
+      analyserRef.current.ctx = ctx;
 
+      // analyser برای میکروفن لوکال
       if (localStreamRef.current) {
-        const source = audioCtx.createMediaStreamSource(localStreamRef.current);
-        const analyser = audioCtx.createAnalyser();
+        const source = ctx.createMediaStreamSource(localStreamRef.current);
+        const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
         source.connect(analyser);
-        analysersRef.current.set(playerId, analyser);
+        analyserRef.current.analysers.set("local", analyser);
       }
 
-      analyserIntervalRef.current = setInterval(() => {
+      analyserRef.current.interval = setInterval(() => {
         const newSpeaking: Record<string, boolean> = {};
 
-        analysersRef.current.forEach((analyser, id) => {
+        analyserRef.current.analysers.forEach((analyser, key) => {
           try {
             const data = new Uint8Array(analyser.fftSize);
             analyser.getByteTimeDomainData(data);
             const volume = Math.max(
               ...Array.from(data).map((v) => Math.abs(v - 128))
             );
-            newSpeaking[id] = volume > 10 && (id !== playerId || !isMuted);
-          } catch {
-            // ignore
-          }
+            const id =
+              key === "local"
+                ? playerId
+                : peersRef.current.get(key)?.peerId || key;
+            newSpeaking[id] = volume > 10 && (key !== "local" || !isMuted);
+          } catch {}
         });
 
         const changed = Object.keys(newSpeaking).some(
@@ -177,28 +194,27 @@ export default function VoiceManager({
           onSpeakingChange?.(newSpeaking);
         }
       }, 200);
-    } catch {
-      // AudioContext not available
-    }
+    } catch {}
   }, [playerId, isMuted, onSpeakingChange]);
 
-  // ── Start mic ────────────────────────────────────────────────────────────
+  // ── Start microphone ──
   const startMic = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true
         },
-        video: false,
+        video: false
       });
       localStreamRef.current = stream;
-      setError("");
-
       stream.getAudioTracks().forEach((track) => {
         track.enabled = !isMuted;
       });
+      setError("");
 
+      // آماده voice
       getSocket().emit("voice_ready", { code, playerId });
       startSpeakingDetection();
     } catch (err) {
@@ -207,34 +223,42 @@ export default function VoiceManager({
     }
   }, [code, playerId, isMuted, startSpeakingDetection]);
 
-  // ── Socket events ────────────────────────────────────────────────────────
+  // ── Socket events ──
   useEffect(() => {
     if (!playerId) return;
-
     startMic();
 
     const socket = getSocket();
 
-    socket.on("voice_user_joined", ({ userId }: { userId: string }) => {
-      if (userId !== playerId) {
-        createPeer(userId, true);
+    // بازیکن جدید آماده voice شد → ما initiator هستیم
+    socket.on(
+      "voice_user_joined",
+      ({
+        userId,
+        socketId: targetSid
+      }: {
+        userId: string;
+        socketId: string;
+      }) => {
+        if (userId !== playerId && targetSid) {
+          createPeer(targetSid, userId, true);
+        }
       }
-    });
+    );
 
-    // ★ فیکس WebRTC: handle offer/answer با state checking
+    // دریافت offer → peer بساز و answer بده
     socket.on(
       "voice_offer",
       async ({
-        fromId,
-        offer,
+        fromSocketId,
+        offer
       }: {
-        fromId: string;
+        fromSocketId: string;
         offer: RTCSessionDescriptionInit;
       }) => {
         try {
-          // همیشه peer جدید بساز برای offer دریافتی
-          removePeer(fromId);
-          const pc = createPeer(fromId, false);
+          removePeer(fromSocketId); // پاک کردن قبلی
+          const pc = createPeer(fromSocketId, "", false);
           if (!pc) return;
 
           await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -242,10 +266,8 @@ export default function VoiceManager({
           await pc.setLocalDescription(answer);
 
           socket.emit("voice_answer", {
-            code,
-            playerId,
-            targetId: fromId,
-            answer: pc.localDescription,
+            targetSocketId: fromSocketId,
+            answer: pc.localDescription
           });
         } catch (err) {
           console.warn("voice_offer error:", err);
@@ -253,22 +275,20 @@ export default function VoiceManager({
       }
     );
 
+    // دریافت answer
     socket.on(
       "voice_answer",
       async ({
-        fromId,
-        answer,
+        fromSocketId,
+        answer
       }: {
-        fromId: string;
+        fromSocketId: string;
         answer: RTCSessionDescriptionInit;
       }) => {
         try {
-          const peer = peersRef.current.get(fromId);
-          if (!peer) return;
-
-          // ★ فیکس: فقط اگر state درست باشه answer رو ست کن
-          if (peer.connection.signalingState === "have-local-offer") {
-            await peer.connection.setRemoteDescription(
+          const peer = peersRef.current.get(fromSocketId);
+          if (peer && peer.pc.signalingState === "have-local-offer") {
+            await peer.pc.setRemoteDescription(
               new RTCSessionDescription(answer)
             );
           }
@@ -278,34 +298,32 @@ export default function VoiceManager({
       }
     );
 
+    // دریافت ICE candidate
     socket.on(
       "voice_ice",
       async ({
-        fromId,
-        candidate,
+        fromSocketId,
+        candidate
       }: {
-        fromId: string;
+        fromSocketId: string;
         candidate: RTCIceCandidateInit;
       }) => {
         try {
-          const peer = peersRef.current.get(fromId);
-          if (!peer) return;
-
-          // ★ فیکس: فقط اگر remoteDescription ست شده باشه
-          if (peer.connection.remoteDescription) {
-            await peer.connection.addIceCandidate(
-              new RTCIceCandidate(candidate)
-            );
+          const peer = peersRef.current.get(fromSocketId);
+          if (peer && peer.pc.remoteDescription) {
+            await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
           }
-        } catch (err) {
-          // ignore ICE errors
-        }
+        } catch {}
       }
     );
 
-    socket.on("voice_user_left", ({ userId }: { userId: string }) => {
-      removePeer(userId);
-    });
+    // بازیکن از voice خارج شد
+    socket.on(
+      "voice_user_left",
+      ({ socketId: leftSid }: { socketId: string }) => {
+        removePeer(leftSid);
+      }
+    );
 
     return () => {
       socket.off("voice_user_joined");
@@ -314,21 +332,26 @@ export default function VoiceManager({
       socket.off("voice_ice");
       socket.off("voice_user_left");
 
-      peersRef.current.forEach((peer) => peer.connection.close());
+      // ★ Cleanup — جلوگیری از memory leak
+      peersRef.current.forEach((peer) => peer.pc.close());
       peersRef.current.clear();
-      localStreamRef.current?.getTracks().forEach((t) => t.stop());
 
-      if (analyserIntervalRef.current) {
-        clearInterval(analyserIntervalRef.current);
-        analyserIntervalRef.current = null;
+      localStreamRef.current?.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+
+      if (analyserRef.current.interval) {
+        clearInterval(analyserRef.current.interval);
+        analyserRef.current.interval = null;
       }
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close();
+      if (analyserRef.current.ctx) {
+        analyserRef.current.ctx.close();
+        analyserRef.current.ctx = null;
       }
+      analyserRef.current.analysers.clear();
     };
   }, [code, playerId, createPeer, startMic, removePeer]);
 
-  // ── Handle mute changes ──────────────────────────────────────────────────
+  // ── Mute/unmute track ──
   useEffect(() => {
     if (localStreamRef.current) {
       localStreamRef.current.getAudioTracks().forEach((track) => {
