@@ -1,0 +1,150 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn...');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  direction: rtl;
+  font-family: 'Vazirmatn', sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ef4444;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #dc2626;
+}
+
+/* ─── فیچر ۱: تم شب (گرادینت تیره navy/dark blue) ──────────────────────── */
+.night-theme {
+  background: linear-gradient(135deg, #0a0a1a 0%, #0f1629 30%, #1a1a3e 60%, #0d1117 100%);
+  color: #ffffff;
+}
+
+/* ─── فیچر ۱: تم روز (گرادینت آبی کمرنگ sky blue) ──────────────────────── */
+.day-theme {
+  background: linear-gradient(135deg, #87CEEB 0%, #B0E0E6 30%, #ADD8E6 60%, #87CEEB 100%);
+  color: #ffffff;
+}
+
+/* ─── فیچر ۱: کادرها در هر دو حالت: بک‌گراند سورمه‌ای ──────────────────── */
+.glass-dark {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(100, 150, 255, 0.15);
+  color: #ffffff;
+}
+
+/* ─── گلس روز (بدون override تم) ─────────────────────────────────────── */
+.glass {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ─── فیچر ۱: تمام تکست‌ها در هر دو حالت سفید ──────────────────────────── */
+/* حذف override های قبلی day-theme .text-white */
+
+.btn-primary {
+  @apply bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.btn-secondary {
+  @apply bg-white/10 hover:bg-white/20 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 active:scale-95 border border-white/20;
+}
+
+.input-field {
+  @apply bg-white/10 border border-white/20 text-white placeholder-white/40 rounded-xl px-4 py-3 w-full focus:outline-none focus:border-red-500 transition-all duration-200 text-right;
+}
+
+/* ─── Glow Animations ────────────────────────────────────────────────── */
+@keyframes glow {
+  0%, 100% {
+    box-shadow: 0 0 5px #ef4444, 0 0 10px #ef4444;
+  }
+  50% {
+    box-shadow: 0 0 20px #ef4444, 0 0 40px #ef4444;
+  }
+}
+
+.glow-red {
+  animation: glow 2s ease-in-out infinite;
+}
+
+/* ─── فیچر ۶: نشانگر صحبت کردن (Speaking indicator) ────────────────── */
+@keyframes speaking-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.speaking-ring {
+  animation: speaking-pulse 1s ease-in-out infinite;
+  border-color: #22c55e !important;
+}
+
+/* ─── Slide/Fade Animations ──────────────────────────────────────────── */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.4s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* ─── Phase transition ───────────────────────────────────────────────── */
+.phase-transition {
+  transition: background 1.5s ease-in-out, color 0.5s ease;
+}
+
+/* ─── God Panel Styles ───────────────────────────────────────────────── */
+.god-panel-section {
+  @apply rounded-xl p-3 bg-white/5 border border-white/10;
+}
+
+/* ─── Sound button styles ────────────────────────────────────────────── */
+.sound-btn {
+  @apply p-2 rounded-lg transition-all duration-200 active:scale-90 hover:scale-105;
+}

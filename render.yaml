@@ -1,0 +1,9 @@
+# services:
+#   - type: web
+#     name: mafia
+#     runtime: node
+#     buildCommand: npm install && npm run build && npm run server:build
+#     startCommand: npm run dev:all
+#     envVars:
+#       - key: NODE_VERSION
+#         value: 20
